@@ -1,0 +1,111 @@
+name: build-llamas
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]   # runs when you push a tag like v1.0.0
+
+permissions:
+  contents: write   # allows releasing assets
+
+env:
+  PROJECT_REPO: ggml-org/llama.cpp
+  BUILD_TYPE: Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            triplet: macos-arm64-metal
+            cmake_flags: "-DGGML_METAL=ON -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_OSX_ARCHITECTURES=arm64"
+            shell: bash
+          - os: ubuntu-22.04
+            triplet: linux-x86_64
+            cmake_flags: "-DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}"
+            shell: bash
+          - os: windows-2022
+            triplet: windows-x86_64
+            cmake_flags: "-DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}"
+            shell: pwsh
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PROJECT_REPO }}
+          fetch-depth: 1
+
+      # deps
+      - name: Deps (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake zip
+      - name: Deps (macOS)
+        if: runner.os == 'macOS'
+        run: brew install cmake zip || true
+      - name: Deps (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install cmake -y --installargs 'ADD_CMAKE_TO_PATH=System' || $true
+
+      # build
+      - name: Configure
+        run: cmake -S . -B build ${{ matrix.cmake_flags }}
+        shell: ${{ matrix.shell }}
+      - name: Build
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} -j
+        shell: ${{ matrix.shell }}
+
+      # package
+      - name: Stage
+        shell: ${{ matrix.shell }}
+        run: |
+          mkdir -p dist/llama/bin
+          cp LICENSE dist/llama/LICENSE.llama.cpp || true
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp build/bin/*.exe dist/llama/bin/ || true
+          else
+            cp build/bin/* dist/llama/bin/ || true
+            chmod +x dist/llama/bin/* || true
+          fi
+      - name: Name archive
+        id: name
+        shell: ${{ matrix.shell }}
+        run: |
+          ver="${GITHUB_REF_NAME:-dev}"; ver="${ver#v}"
+          echo "VER=$ver" >> $GITHUB_OUTPUT
+          echo "ARCHIVE=llama-${ver}-${{ matrix.triplet }}.zip" >> $GITHUB_OUTPUT
+      - name: Zip
+        shell: ${{ matrix.shell }}
+        run: cd dist && zip -r "${{ steps.name.outputs.ARCHIVE }}" llama
+
+      - name: Upload artifact (workflow)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.triplet }}
+          path: dist/${{ steps.name.outputs.ARCHIVE }}
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Checksums
+        run: |
+          cd artifacts
+          find . -type f -name "*.zip" -exec sh -c 'sha256sum "$1" >> SHA256SUMS.txt' _ {} \;
+          cat SHA256SUMS.txt
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/**/*.zip
+            artifacts/SHA256SUMS.txt
