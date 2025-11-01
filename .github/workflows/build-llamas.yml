@@ -37,41 +37,75 @@ jobs:
           repository: ${{ env.PROJECT_REPO }}
           fetch-depth: 1
 
-      # --- deps ---
+      # -------------------- deps --------------------
       - name: Deps (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake zip
+          sudo apt-get install -y build-essential cmake zip libcurl4-openssl-dev
+
       - name: Deps (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake zip || true
+          brew install cmake zip curl || true
+
       - name: Deps (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           choco install cmake -y --installargs 'ADD_CMAKE_TO_PATH=System' || $true
 
-      # --- build ---
-      - name: Configure (CMake)
+      - name: Setup vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git $env:USERPROFILE\vcpkg
+          & $env:USERPROFILE\vcpkg\bootstrap-vcpkg.bat
+          echo "VCPKG_ROOT=$env:USERPROFILE\vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Install curl via vcpkg (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT\vcpkg.exe install curl:x64-windows
+
+      - name: List vcpkg installed (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT\vcpkg.exe list
+
+      # -------------------- build --------------------
+      - name: Configure (CMake) [Linux/macOS]
+        if: runner.os != 'Windows'
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${BUILD_TYPE} ${{ matrix.cmake_flags }}
-      - name: Build
+
+      - name: Configure (CMake) [Windows + vcpkg/curl]
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -DCMAKE_BUILD_TYPE=${env:BUILD_TYPE} `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            ${{ matrix.cmake_flags }}
+
+      - name: Build [Linux/macOS]
+        if: runner.os != 'Windows'
         run: cmake --build build --config ${BUILD_TYPE} -j
 
-      # --- package ---
-      - name: Stage files
+      - name: Build [Windows]
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: cmake --build build --config ${env:BUILD_TYPE} -j
+
+      # -------------------- package --------------------
+      - name: Stage files (Linux/macOS)
+        if: runner.os != 'Windows'
         run: |
           mkdir -p dist/llama/bin
           cp LICENSE dist/llama/LICENSE.llama.cpp || true
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            # This branch won’t run under bash on Windows; we split below.
-            :
-          else
-            cp build/bin/* dist/llama/bin/ || true
-            chmod +x dist/llama/bin/* || true
-          fi
-        if: runner.os != 'Windows'
+          cp build/bin/* dist/llama/bin/ || true
+          chmod +x dist/llama/bin/* || true
 
       - name: Stage files (Windows)
         if: runner.os == 'Windows'
@@ -79,7 +113,15 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist\llama\bin | Out-Null
           Copy-Item LICENSE dist\llama\LICENSE.llama.cpp -ErrorAction SilentlyContinue
-          Copy-Item build\bin\*.exe dist\llama\bin\ -ErrorAction SilentlyContinue
+          $releaseBin = "build\bin\Release"
+          $flatBin    = "build\bin"
+          if (Test-Path $releaseBin) {
+            Copy-Item "$releaseBin\*.exe" dist\llama\bin\ -ErrorAction SilentlyContinue
+          } elseif (Test-Path $flatBin) {
+            Copy-Item "$flatBin\*.exe" dist\llama\bin\ -ErrorAction SilentlyContinue
+          } else {
+            Write-Host "No Windows binaries found under build\bin or build\bin\Release"
+          }
 
       - name: Name archive
         id: name
