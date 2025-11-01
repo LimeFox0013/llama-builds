@@ -3,7 +3,7 @@ name: build-llamas
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    tags: ['v*']
 
 permissions:
   contents: write
@@ -20,13 +20,23 @@ jobs:
         include:
           - os: macos-14
             triplet: macos-arm64-metal
-            cmake_flags: "-DGGML_METAL=ON -DCMAKE_OSX_ARCHITECTURES=arm64"
+            cmake_flags: >
+              -DGGML_METAL=ON
+              -DGGML_METAL_EMBED_LIBRARY=ON
+              -DCMAKE_OSX_ARCHITECTURES=arm64
+              -DBUILD_SHARED_LIBS=OFF
+              -DLLAMA_STATIC=ON
+              -DLLAMA_CURL=OFF
           - os: ubuntu-22.04
             triplet: linux-x86_64
-            cmake_flags: ""
+            cmake_flags: >
+              -DBUILD_SHARED_LIBS=OFF
+              -DLLAMA_STATIC=ON
           - os: windows-2022
             triplet: windows-x86_64
-            cmake_flags: ""
+            cmake_flags: >
+              -DBUILD_SHARED_LIBS=OFF
+              -DLLAMA_STATIC=ON
 
     runs-on: ${{ matrix.os }}
 
@@ -88,6 +98,27 @@ jobs:
       - name: Build [Linux/macOS]
         if: runner.os != 'Windows'
         run: cmake --build build --config ${BUILD_TYPE} -j
+
+      # -------------------- verify (no shared libs) --------------------
+      - name: Verify static linking (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          otool -L build/bin/llama-cli || true
+          # Fail if the binary still expects libllama.dylib
+          ! otool -L build/bin/llama-cli | grep -q "libllama.dylib"
+
+      - name: Verify static linking (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          ldd build/bin/llama-cli || true
+          # Fail if it links to libllama.so
+          ! ldd build/bin/llama-cli | grep -q "libllama.so"
+
+      - name: Verify static linking (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (Test-Path build\bin\llama.dll) { throw "Unexpected shared library found: llama.dll" }
 
       - name: Build [Windows]
         if: runner.os == 'Windows'
