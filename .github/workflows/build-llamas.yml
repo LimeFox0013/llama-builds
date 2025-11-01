@@ -67,7 +67,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:VCPKG_ROOT\vcpkg.exe install curl:x64-windows
+          & "$env:VCPKG_ROOT\vcpkg.exe" install curl:x64-windows
 
       - name: List vcpkg installed (Windows)
         if: runner.os == 'Windows'
