@@ -73,7 +73,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $env:VCPKG_ROOT\vcpkg.exe list
+          & "$env:VCPKG_ROOT\vcpkg.exe" list
 
       # -------------------- build --------------------
       - name: Configure (CMake) [Linux/macOS]
