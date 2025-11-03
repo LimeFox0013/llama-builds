@@ -93,7 +93,16 @@ jobs:
       - name: Configure (CMake) [Windows + vcpkg/curl]
         if: runner.os == 'Windows'
         shell: pwsh
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${env:BUILD_TYPE} -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" ${{ matrix.cmake_flags }}
+        run: |
+          $args = @(
+            '-S', '.',
+            '-B', 'build',
+            "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE",
+            "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake",
+            '-DBUILD_SHARED_LIBS=OFF',
+            '-DLLAMA_STATIC=ON'
+          )
+          & cmake @args
 
       - name: Build [Linux/macOS]
         if: runner.os != 'Windows'
