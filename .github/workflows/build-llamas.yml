@@ -52,12 +52,12 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake zip libcurl4-openssl-dev
+          sudo apt-get install -y build-essential cmake libcurl4-openssl-dev
 
       - name: Deps (macOS)
         if: runner.os == 'macOS'
         run: |
-          brew install cmake zip curl || true
+          brew install cmake curl || true
 
       - name: Deps (Windows)
         if: runner.os == 'Windows'
@@ -138,15 +138,16 @@ jobs:
       - name: Stage files (Linux/macOS)
         if: runner.os != 'Windows'
         run: |
-          mkdir -p dist/llama/bin
+          rm -rf dist && mkdir -p dist/llama/bin
           cp LICENSE dist/llama/LICENSE.llama.cpp || true
-          cp build/bin/* dist/llama/bin/ || true
+          cp -a build/bin/* dist/llama/bin/ || true
           chmod +x dist/llama/bin/* || true
 
       - name: Stage files (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          if (Test-Path dist) { Remove-Item -Recurse -Force dist }
           New-Item -ItemType Directory -Force -Path dist\llama\bin | Out-Null
           Copy-Item LICENSE dist\llama\LICENSE.llama.cpp -ErrorAction SilentlyContinue
           $releaseBin = "build\bin\Release"
@@ -159,50 +160,54 @@ jobs:
             Write-Host "No Windows binaries found under build\bin or build\bin\Release"
           }
 
-      - name: Name archive
-        id: name
-        run: |
-          ver="${GITHUB_REF_NAME:-dev}"; ver="${ver#v}"
-          echo "VER=$ver" >> $GITHUB_OUTPUT
-          echo "ARCHIVE=llama-${ver}-${{ matrix.triplet }}.zip" >> $GITHUB_OUTPUT
-
-      - name: Zip (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          cd dist
-          zip -r "${{ steps.name.outputs.ARCHIVE }}" llama
-
-      - name: Zip (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          cd dist
-          Compress-Archive -Path .\llama\* -DestinationPath "${{ steps.name.outputs.ARCHIVE }}" -Force
-
-      - name: Upload artifact (per platform)
+      - name: Upload artifact (folder, uncompressed)
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.triplet }}
-          path: dist/${{ steps.name.outputs.ARCHIVE }}
+          path: dist/llama
+          if-no-files-found: error
 
   release:
     needs: [build]
     runs-on: ubuntu-22.04
     steps:
-      - name: Download artifacts
+      - name: Install zip
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Download artifacts (keep per-artifact folders)
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: false   # keep each artifact in its own dir; no extra wrapping
+          # archive-format not set -> extracts files, not zips
+
+      - name: Name/version env
+        id: name
+        run: |
+          ver="${GITHUB_REF_NAME:-dev}"; ver="${ver#v}"
+          echo "VER=$ver" >> $GITHUB_OUTPUT
+
+      - name: Create final zips (zip the CONTENTS, not the folder)
+        run: |
+          set -euo pipefail
+          cd artifacts
+          for d in */ ; do
+            triplet="${d%/}"
+            archive="llama-${{ steps.name.outputs.VER }}-${triplet}.zip"
+            ( cd "$triplet" && zip -r9 "../${archive}" . )
+            echo "Created ${archive}"
+          done
+
       - name: Checksums
         run: |
           cd artifacts
-          find . -type f -name "*.zip" -exec sh -c 'sha256sum "$1" >> SHA256SUMS.txt' _ {} \;
-          cat SHA256SUMS.txt
+          sha256sum *.zip | tee SHA256SUMS.txt
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           draft: false
           prerelease: false
           files: |
-            artifacts/**/*.zip
+            artifacts/*.zip
             artifacts/SHA256SUMS.txt
